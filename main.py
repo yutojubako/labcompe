@@ -82,10 +82,12 @@ class Net(nn.Module):
         # 出力チャンネル数6, kernel size 5のCNNを定義する
         # 畳み込みの定義はPytorchの場合torch.nn.Conv2dで行います。ヒント:白黒画像とはチャネル数いくつかは自分で考えよう
         # 公式documentで使い方を確認する力をつけてほしいので、自分でconv2dなどの使い方は調べよう
-        self.conv1 = nn.Conv2d(in_channels = 1, out_channels = 6, kernel_size=5, )
+        self.conv1 = nn.Conv2d(in_channels = 1, out_channels = 32, kernel_size=3)
         # 出力チャネル数12, kernel_size 3のCNNを定義する 上記と同様に今度は自分で書いてみよう
-        self.conv2 = nn.Conv2d(in_channels = 6, out_channels=12, kernel_size=3)
+        self.conv2 = nn.Conv2d(in_channels = 32, out_channels=64, kernel_size=5)
         
+        self.drop = nn.Dropout(0.25)
+
         # Maxpoolingの定義(fowardでするのでもどっちでも)
         self.maxpool = nn.MaxPool2d(kernel_size=2)
         
@@ -95,7 +97,7 @@ class Net(nn.Module):
         # self.fc1に入力されるTensorの次元は何になっているか計算してみよう！
         # これを10クラス分類なので，10次元に変換するようなLinear層を定義します
         
-        self.fc1 = nn.Linear(in_features=12*5*5,out_features=10)
+        self.fc1 = nn.Linear(in_features=64*5*5,out_features=10)
 
     
     def forward(self, x):
@@ -116,6 +118,8 @@ class Net(nn.Module):
         # MaxPoolingをかけます
         x = self.maxpool(x)
         
+        x = self.drop(x)
+
         # 少しトリッキーなことが起きます．
         # CNNの出力結果を fully-connected layer に入力するために
         # 1次元のベクトルにしてやる必要があります
@@ -155,13 +159,15 @@ if __name__ == "__main__":
     PARAMS = {
         'valid_size': 0.2,
         'batch_size': 64,
-        'epochs': 100,
+        'epochs': 25,
         'lr': 0.001,
         'valid_batch_size': 256,
         'test_batch_size': 256,
     }
+
+
     
-    wandb.init = wandb.init(project='labcompe', entity='keiomobile2', config=PARAMS, name='baseline')
+    wandb.init = wandb.init(project='labcompe', entity='keiomobile2', config=PARAMS)
     
     
     train_df = pd.read_csv(PATH['train'])
@@ -175,6 +181,7 @@ if __name__ == "__main__":
     
     transform = transforms.Compose([
         transforms.ToTensor(),
+        # transforms.RandomRotation(10), #id1
         # numpy.arrayで読み込まれた画像をPyTorch用のTensorに変換します．
         transforms.Normalize((0.5, ), (0.5, ))
         #正規化の処理も加えます。
