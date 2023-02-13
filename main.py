@@ -7,7 +7,7 @@ import cv2
 
 import matplotlib.pyplot as plt
 import seaborn as sns
-
+from torchvision.models import resnet18
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
 import wandb
@@ -17,6 +17,8 @@ import torch.nn.functional as F
 from torch.optim import SGD,Adam
 from torch.utils.data import Dataset, DataLoader
 import torchvision.transforms as transforms
+from sklearn.model_selection import StratifiedKFold
+
 
 def seed_everything(seed=42):
     os.environ['PYTHONHASHSEED'] = str(seed)
@@ -51,85 +53,42 @@ class KMNISTDataset(Dataset):
         # __getitem__でデータを返す前にtransformでデータに前処理をしてから返すことがポイント
         return image, label
 
-# 入力は28*28の白黒画像で10クラス分類を行う
-
-class MLP(nn.Module):
-    def __init__(self, input_dim=28*28, hidden_dim=128, output_dim=10):
-        super().__init__()
-        # nn.Linearは fully-connected layer (全結合層)のことです．
-        self.fc1 = nn.Linear(input_dim, hidden_dim)
-        self.fc2 = nn.Linear(hidden_dim, output_dim)
-        self.activation = nn.ReLU()
-    
-    def forward(self, x):
-        # 1次元のベクトルにする
-        x = x.view(x.size(0), -1)
-        x = self.fc1(x)
-        x = self.activation(x)
-        x = self.fc2(x)
-        
-        return x
-
-# 以下を埋めてみよう
-# 今回の研修では
-# モデルとして入力から出力チャネル数6, kernel_size5の畳み込み層→Maxpooling(2×2)→出力チャネル数12, kernel_size3の畳み込み層
-# → MaxPooling(2×2)→1次元にする→Linearで10次元出力
-# というモデルを作成してください(strideなどは考えないでください)
-
 class Net(nn.Module):
     def __init__(self):
         super(Net, self).__init__()
-        # 出力チャンネル数6, kernel size 5のCNNを定義する
-        # 畳み込みの定義はPytorchの場合torch.nn.Conv2dで行います。ヒント:白黒画像とはチャネル数いくつかは自分で考えよう
-        # 公式documentで使い方を確認する力をつけてほしいので、自分でconv2dなどの使い方は調べよう
-        self.conv1 = nn.Conv2d(in_channels = 1, out_channels = 32, kernel_size=3)
-        # 出力チャネル数12, kernel_size 3のCNNを定義する 上記と同様に今度は自分で書いてみよう
-        self.conv2 = nn.Conv2d(in_channels = 32, out_channels=64, kernel_size=5)
+        self.conv1 = nn.Conv2d(in_channels = 1, out_channels = 6, kernel_size=5)
+        self.conv2 = nn.Conv2d(in_channels = 6, out_channels=12, kernel_size=3)
         
         self.drop = nn.Dropout(0.25)
-
-        # Maxpoolingの定義(fowardでするのでもどっちでも)
+        self.batch1 = nn.BatchNorm2d(6)
+        self.batch2 = nn.BatchNorm2d(12)
         self.maxpool = nn.MaxPool2d(kernel_size=2)
-        
-        # Linearの定義
-        # 線形変換を行う層を定義してあげます: y = Wx + b
-        # self.conv1, conv2のあと，maxpoolingを通すことで，
-        # self.fc1に入力されるTensorの次元は何になっているか計算してみよう！
-        # これを10クラス分類なので，10次元に変換するようなLinear層を定義します
-        
-        self.fc1 = nn.Linear(in_features=64*5*5,out_features=10)
+        self.fc1 = nn.Linear(in_features=12*5*5,out_features=10)
 
     
     def forward(self, x):
         batch_size = x.shape[0]
-        # forward関数の中では，，入力 x を順番にレイヤーに通していきます．みていきましょう．    
-        # まずは，画像をCNNに通します
         x = self.conv1(x)
-
-        # 活性化関数としてreluを使います
+        x = self.batch1(x)
         x = F.relu(x)
-        
-        # 次に，MaxPoolingをかけます．
         x = self.maxpool(x)
-        
-        # 2つ目のConv層に通します
         x = self.conv2(x)
-        
-        # MaxPoolingをかけます
+        x = self.batch2(x)
         x = self.maxpool(x)
-        
-        x = self.drop(x)
-
-        # 少しトリッキーなことが起きます．
-        # CNNの出力結果を fully-connected layer に入力するために
-        # 1次元のベクトルにしてやる必要があります
-        # 正確には，　(batch_size, channel, height, width) --> (batch_size, channel * height * width)
         x = x.view(batch_size, -1)
-        
-        # linearと活性化関数に通します
         x = self.fc1(x)
-#         x = F.relu(x)
         return x
+
+
+class ResNet(nn.Module):
+    def __init__(self, num_classes=10):
+        super().__init__()
+        self.model = resnet18(pretrained=True)
+        self.model.fc = nn.Linear(512, num_classes)
+
+    def forward(self, x):
+        return self.model(x)
+
 def accuracy_score_torch(y_pred, y):
     y_pred = torch.argmax(y_pred, axis=1).cpu().numpy()
     y = y.cpu().numpy()
@@ -159,14 +118,17 @@ if __name__ == "__main__":
     PARAMS = {
         'valid_size': 0.2,
         'batch_size': 64,
-        'epochs': 25,
+        'epochs': 5,
         'lr': 0.001,
         'valid_batch_size': 256,
         'test_batch_size': 256,
     }
 
 
-    
+    state_dicts = []
+    best_sd = None
+    best_score = 0
+
     wandb.init = wandb.init(project='labcompe', entity='keiomobile2', config=PARAMS)
     
     
@@ -179,12 +141,23 @@ if __name__ == "__main__":
     train_df = train_df.reset_index(drop=True)
     valid_df = valid_df.reset_index(drop=True)
     
+    # transform = transforms.Compose([
+    #     transforms.ToTensor(),
+    #     transforms.RandomRotation(10), #id1
+
+    #     transforms.RandomAffine(degrees=10, translate=(0.1, 0.1), scale=(0.9, 1.1)), # id4
+
+    #     # numpy.arrayで読み込まれた画像をPyTorch用のTensorに変換します．
+    #     transforms.Normalize((0.5, ), (0.5, ))
+    #     #正規化の処理も加えます。
+    # ])
+
     transform = transforms.Compose([
+        transforms.ToPILImage(),
+        transforms.Resize(224),
+        transforms.Grayscale(num_output_channels=3),
         transforms.ToTensor(),
-        # transforms.RandomRotation(10), #id1
-        # numpy.arrayで読み込まれた画像をPyTorch用のTensorに変換します．
-        transforms.Normalize((0.5, ), (0.5, ))
-        #正規化の処理も加えます。
+        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
     ])
 
     train_dataset = KMNISTDataset(train_df[ID], train_df[TARGET], PATH['train_image_dir'], transform=transform)
@@ -194,11 +167,13 @@ if __name__ == "__main__":
     train_dataloader = DataLoader(train_dataset, batch_size=PARAMS['batch_size'], shuffle=True)
     valid_dataloader = DataLoader(valid_dataset, batch_size=PARAMS['valid_batch_size'], shuffle=False)
     
-    model = MLP().to(DEVICE)
+    model = ResNet().to(DEVICE)
     
     optim = Adam(model.parameters(), lr=PARAMS['lr'])
     criterion = nn.CrossEntropyLoss()
-    
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optim, mode='min', factor=0.8, patience=1)
+
+
     for epoch in range(PARAMS['epochs']):
         # epochループを回す
         model.train()
@@ -250,10 +225,11 @@ if __name__ == "__main__":
             np.mean(valid_accuracy_list)
         ))
     
-    transform = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize((0.5, ), (0.5, ))
-    ])
+        if best_score <= np.mean(valid_accuracy_list):
+            best_score = np.mean(valid_accuracy_list)
+            best_sd = model.state_dict()
+        scheduler.step(np.mean(valid_loss_list))
+    state_dicts.append(best_sd)
 
     test_dataset = KMNISTDataset(
         sample_submission_df[ID],
