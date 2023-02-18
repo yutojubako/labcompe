@@ -18,6 +18,7 @@ from torch.optim import SGD,Adam
 from torch.utils.data import Dataset, DataLoader
 import torchvision.transforms as transforms
 from sklearn.model_selection import StratifiedKFold
+from convnext import convnext_small
 
 
 def seed_everything(seed=42):
@@ -118,7 +119,7 @@ if __name__ == "__main__":
     PARAMS = {
         'valid_size': 0.2,
         'batch_size': 64,
-        'epochs': 5,
+        'epochs': 30,
         'lr': 0.001,
         'valid_batch_size': 256,
         'test_batch_size': 256,
@@ -135,7 +136,7 @@ if __name__ == "__main__":
     train_df = pd.read_csv(PATH['train'])
     sample_submission_df = pd.read_csv(PATH['sample_submission'])
     
-    net = Net()
+    # net = Net()
     train_df, valid_df = train_test_split(
     train_df, test_size=PARAMS['valid_size'], random_state=SEED, shuffle=True)
     train_df = train_df.reset_index(drop=True)
@@ -156,12 +157,13 @@ if __name__ == "__main__":
         transforms.ToPILImage(),
         transforms.Resize(224),
         transforms.Grayscale(num_output_channels=3),
-        # transforms.RandomOrder([
-        #     transforms.RandomResizedCrop(224, scale=(0.9, 1.1), ratio=(0.9, 1.1)),
-        #     transforms.RandomAffine(degrees=10)
-        # ]),
+        transforms.RandomOrder([
+            transforms.RandomResizedCrop(224, scale=(0.9, 1.1), ratio=(0.9, 1.1)),
+            transforms.RandomAffine(degrees=10)
+        ]),
         transforms.ToTensor(),
         transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+        transforms.RandomErasing(p=0.1, scale=(0.02, 0.33), ratio=(0.3, 3.3), value=0, inplace=False),
     ])
 
     train_dataset = KMNISTDataset(train_df[ID], train_df[TARGET], PATH['train_image_dir'], transform=transform)
@@ -177,7 +179,10 @@ if __name__ == "__main__":
 
     for fold, (train_idx, valid_idx) in enumerate(skf.split(train_df[ID], train_df[TARGET])):
         # Setting of model
-        model = ResNet().to(DEVICE)
+        # model = ResNet().to(DEVICE)
+        # model = convnext_tiny(pretrained=True).to(DEVICE)
+        model = convnext_small(pretrained=True).to(DEVICE)
+
         optim = Adam(model.parameters(), lr=PARAMS['lr'])
         criterion = nn.CrossEntropyLoss()
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optim, mode='min', factor=0.8, patience=1)
