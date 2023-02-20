@@ -7,7 +7,7 @@ import cv2
 
 import matplotlib.pyplot as plt
 import seaborn as sns
-from torchvision.models import resnet18
+
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
 import wandb
@@ -17,86 +17,35 @@ import torch.nn.functional as F
 from torch.optim import SGD,Adam
 from torch.utils.data import Dataset, DataLoader
 import torchvision.transforms as transforms
+
+from models.mynet import Mynet
 from sklearn.model_selection import StratifiedKFold
-from convnext import convnext_small
+from models.convnext import convnext_tiny
+from utils.utils import seed_everything, accuracy_score_torch
+from datasets.dataset import KMNISTDataset
+from models.resnet import ResNet
+import argparse
 
-
-def seed_everything(seed=42):
-    os.environ['PYTHONHASHSEED'] = str(seed)
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.backends.cudnn.deterministic = True
+def parse_params() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--epochs', type=int, default=30)
+    parser.add_argument('--folds', type=int, required=True)
+    parser.add_argument('--batch_size', type=int, default=64)
+    parser.add_argument('--model', type=str, required=True,choices=['resnet', 'convnext', 'mynet'])
+    parser.add_argument('--wandb', type=bool, required=True,choices=[True, False])
+    parser.add_argument('--optim', type=str, default='adam',choices=['adam', 'sgd'])
+    args = parser.parse_args()
     
-class KMNISTDataset(Dataset):
-    def __init__(self, fname_list, label_list, image_dir, transform=None):
-        super().__init__()
-        self.fname_list = fname_list
-        self.label_list = label_list
-        self.image_dir = image_dir
-        self.transform = transform
-        
-    # Datasetを実装するときにはtorch.utils.data.Datasetを継承する
-    # __len__と__getitem__を実装する
+    return args
+
+
+
+
+
+
+def main():
+    args = parse_params()
     
-    def __len__(self):
-        return len(self.fname_list)
-    
-    def __getitem__(self, idx):
-        fname = self.fname_list[idx]
-        label = self.label_list[idx]
-        
-        image = cv2.imread(os.path.join(self.image_dir, fname))
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        if self.transform is not None:
-            image = self.transform(image)
-        # __getitem__でデータを返す前にtransformでデータに前処理をしてから返すことがポイント
-        return image, label
-
-class Net(nn.Module):
-    def __init__(self):
-        super(Net, self).__init__()
-        self.conv1 = nn.Conv2d(in_channels = 1, out_channels = 6, kernel_size=5)
-        self.conv2 = nn.Conv2d(in_channels = 6, out_channels=12, kernel_size=3)
-        
-        self.drop = nn.Dropout(0.25)
-        self.batch1 = nn.BatchNorm2d(6)
-        self.batch2 = nn.BatchNorm2d(12)
-        self.maxpool = nn.MaxPool2d(kernel_size=2)
-        self.fc1 = nn.Linear(in_features=12*5*5,out_features=10)
-
-    
-    def forward(self, x):
-        batch_size = x.shape[0]
-        x = self.conv1(x)
-        x = self.batch1(x)
-        x = F.relu(x)
-        x = self.maxpool(x)
-        x = self.conv2(x)
-        x = self.batch2(x)
-        x = self.maxpool(x)
-        x = x.view(batch_size, -1)
-        x = self.fc1(x)
-        return x
-
-
-class ResNet(nn.Module):
-    def __init__(self, num_classes=10):
-        super().__init__()
-        self.model = resnet18(pretrained=True)
-        self.model.fc = nn.Linear(512, num_classes)
-
-    def forward(self, x):
-        return self.model(x)
-
-def accuracy_score_torch(y_pred, y):
-    y_pred = torch.argmax(y_pred, axis=1).cpu().numpy()
-    y = y.cpu().numpy()
-
-    return accuracy_score(y_pred, y)
-
-if __name__ == "__main__":
     INPUT_DIR = './input/bootcamp2023/'
 
     PATH = {
@@ -118,8 +67,8 @@ if __name__ == "__main__":
     # Parameters for neural network. We will see the details later...
     PARAMS = {
         'valid_size': 0.2,
-        'batch_size': 64,
-        'epochs': 30,
+        'batch_size': args.batch_size,
+        'epochs': args.epochs,
         'lr': 0.001,
         'valid_batch_size': 256,
         'test_batch_size': 256,
@@ -130,7 +79,8 @@ if __name__ == "__main__":
     best_sd = None
     best_score = 0
 
-    wandb.init = wandb.init(project='labcompe', entity='keiomobile2', config=PARAMS)
+    if args.wandb:
+        wandb.init = wandb.init(project='labcompe', entity='keiomobile2', config=PARAMS)
     
     
     train_df = pd.read_csv(PATH['train'])
@@ -141,17 +91,6 @@ if __name__ == "__main__":
     train_df, test_size=PARAMS['valid_size'], random_state=SEED, shuffle=True)
     train_df = train_df.reset_index(drop=True)
     valid_df = valid_df.reset_index(drop=True)
-    
-    # transform = transforms.Compose([
-    #     transforms.ToTensor(),
-    #     transforms.RandomRotation(10), #id1
-
-    #     transforms.RandomAffine(degrees=10, translate=(0.1, 0.1), scale=(0.9, 1.1)), # id4
-
-    #     # numpy.arrayで読み込まれた画像をPyTorch用のTensorに変換します．
-    #     transforms.Normalize((0.5, ), (0.5, ))
-    #     #正規化の処理も加えます。
-    # ])
 
     transform = transforms.Compose([
         transforms.ToPILImage(),
@@ -174,16 +113,23 @@ if __name__ == "__main__":
     
 
 
-    k = 5
+    k = args.folds
     skf = StratifiedKFold(n_splits=k, shuffle=True, random_state=SEED)
 
     for fold, (train_idx, valid_idx) in enumerate(skf.split(train_df[ID], train_df[TARGET])):
         # Setting of model
-        # model = ResNet().to(DEVICE)
-        # model = convnext_tiny(pretrained=True).to(DEVICE)
-        model = convnext_small(pretrained=True).to(DEVICE)
+        if args.model == 'resnet':
+            model = ResNet().to(DEVICE)
+        elif args.model == 'convnext':
+            model = convnext_tiny(pretrained=True).to(DEVICE)
+        elif args.model == 'mynet':
+            model = Mynet().to(DEVICE)
 
-        optim = Adam(model.parameters(), lr=PARAMS['lr'])
+        
+        if args.optim == 'adam':
+            optim = Adam(model.parameters(), lr=PARAMS['lr'])  
+        if args.optim == 'sgd':
+            optim = SGD(model.parameters(), lr=PARAMS['lr'], momentum=0.9, weight_decay=5e-4)
         criterion = nn.CrossEntropyLoss()
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optim, mode='min', factor=0.8, patience=1)
 
@@ -223,7 +169,8 @@ if __name__ == "__main__":
                 
                 train_loss_list.append(loss.item())
                 train_accuracy_list.append(accuracy_score_torch(y_pred, y))
-                wandb.log({'train_loss': loss.item(), 'train_accuracy': accuracy_score_torch(y_pred, y)})
+                if args.wandb:
+                    wandb.log({'train_loss': loss.item(), 'train_accuracy': accuracy_score_torch(y_pred, y)})
 
             model.eval()
             valid_loss_list = []
@@ -239,7 +186,8 @@ if __name__ == "__main__":
                 
                 valid_loss_list.append(loss.item())
                 valid_accuracy_list.append(accuracy_score_torch(y_pred, y))
-                wandb.log({'valid_loss': loss.item(), 'valid_accuracy': accuracy_score_torch(y_pred, y)})
+                if args.wandb:
+                    wandb.log({'valid_loss': loss.item(), 'valid_accuracy': accuracy_score_torch(y_pred, y)})
             
             print('epoch: {}/{} - loss: {:.5f} - accuracy: {:.3f} - val_loss: {:.5f} - val_accuracy: {:.3f}'.format(
                 epoch,
@@ -254,7 +202,9 @@ if __name__ == "__main__":
                 best_score = np.mean(valid_accuracy_list)
                 best_sd = model.state_dict()
             scheduler.step(np.mean(valid_loss_list))
-        state_dicts.append(best_sd)
+    state_dicts.append(best_sd)
+    
+    torch.save(best_sd, f'./best_{args.model}_fold{fold}.pth')
 
     test_dataset = KMNISTDataset(
         sample_submission_df[ID],
@@ -265,6 +215,7 @@ if __name__ == "__main__":
 
     test_dataloader = DataLoader(test_dataset, batch_size=PARAMS['test_batch_size'], shuffle=False)
     
+    model.load_state_dict(torch.load(f'./best_{args.model}_fold{fold}.pth'))
     model.eval()
     predictions = []
 
@@ -283,3 +234,7 @@ if __name__ == "__main__":
     sample_submission_df.to_csv('submission.csv', index=False)
     from IPython.display import FileLink
     FileLink('submission.csv')
+
+
+if __name__ == '__main__':
+    main()
